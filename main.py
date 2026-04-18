@@ -1,51 +1,43 @@
 import sys
 import os
 import json
-import subprocess
 import re
-from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog
+from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog, QMessageBox
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtCore import QFile, QProcess, QTimer
 
-
-
 def resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and for PyInstaller """
     try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-# Then update your UI loading line to:
-ui_file = QFile(resource_path("main_window.ui"))
-
-
-
-
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
 class RenderManager(QMainWindow):
     def __init__(self):
         super().__init__()
         
+        if getattr(sys, 'frozen', False):
+            self.base_dir = os.path.dirname(sys.executable)
+        else:
+            self.base_dir = os.path.dirname(os.path.abspath(__file__))
+            
+        self.config_file = os.path.join(self.base_dir, "render_config.json")
+        
         loader = QUiLoader()
-        ui_file = QFile("main_window.ui")
-        ui_file.open(QFile.ReadOnly)
+        ui_path = resource_path("main_window.ui")
+        ui_file = QFile(ui_path)
+        if not ui_file.open(QFile.ReadOnly): return
         self.ui = loader.load(ui_file)
         ui_file.close()
         
         self.setCentralWidget(self.ui)
-        self.setWindowTitle("Render Ground Control v1.1")
+        self.setWindowTitle("Render Champ v1.3")
         self.resize(self.ui.size())
 
-        self.config_file = "render_config.json"
         self.render_process = QProcess()
         self.render_process.finished.connect(self.on_render_finished)
-        
-        # New variable to hold the dynamic frame target
-        self.current_total_frames = 1 
+        self.current_total_frames = 0 
 
         self.ui.btnAdd.clicked.connect(self.add_file)
         self.ui.btnRemove.clicked.connect(self.remove_file)
@@ -59,27 +51,40 @@ class RenderManager(QMainWindow):
         self.timer.start(5000)
 
     def get_blend_frame_count(self, blender_exe, blend_path):
-        """Invisible probe to get the actual frame_end from the blend file."""
-        try:
-            cmd = [blender_exe, "-b", blend_path, "--python-expr", "import bpy; print('FRAME_COUNT:' + str(bpy.context.scene.frame_end))"]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            match = re.search(r'FRAME_COUNT:(\d+)', result.stdout)
-            return int(match.group(1)) if match else 1400
-        except:
-            return 1400 # Fallback
+        """Native Qt Probe: No black windows, no shell errors."""
+        probe = QProcess()
+        # Clean paths of extra quotes if they exist
+        exe = blender_exe.strip().replace('"', '')
+        file = blend_path.strip().replace('"', '')
+        
+        script = "import bpy; print('FRAME_COUNT:' + str(bpy.context.scene.frame_end))"
+        args = ["-b", file, "--python-expr", script]
+        
+        probe.start(exe, args)
+        
+        # Give it up to 15 seconds to open Blender and read the file
+        if not probe.waitForFinished(15000):
+            probe.kill()
+            return None
+            
+        output = str(probe.readAllStandardOutput())
+        match = re.search(r'FRAME_COUNT:(\d+)', output)
+        return int(match.group(1)) if match else None
 
     def load_state(self):
         if os.path.exists(self.config_file):
-            with open(self.config_file, "r") as f:
-                data = json.load(f)
-                self.ui.listQueue.addItems(data.get("queue", []))
-                self.ui.lineBlenderPath.setText(data.get("blender_path", ""))
+            try:
+                with open(self.config_file, "r") as f:
+                    data = json.load(f)
+                    self.ui.listQueue.addItems(data.get("queue", []))
+                    self.ui.lineBlenderPath.setText(data.get("blender_path", ""))
+            except: pass
 
     def save_state(self):
         queue = [self.ui.listQueue.item(i).text() for i in range(self.ui.listQueue.count())]
         data = {"queue": queue, "blender_path": self.ui.lineBlenderPath.text()}
         with open(self.config_file, "w") as f:
-            json.dump(data, f)
+            json.dump(data, f, indent=4)
 
     def add_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select .blend", "", "Blender (*.blend)")
@@ -95,41 +100,51 @@ class RenderManager(QMainWindow):
     def start_render(self):
         if self.ui.listQueue.count() == 0: return
         
-        blender_exe = self.ui.lineBlenderPath.text().strip()
+        blender_exe = self.ui.lineBlenderPath.text().strip().replace('"', '')
         blend_path = self.ui.listQueue.item(0).text()
         
-        # 1. Update the dynamic frame target for this specific file
-        self.ui.lblStatus.setText("Auditing file metadata...")
-        self.current_total_frames = self.get_blend_frame_count(blender_exe, blend_path)
+        if not os.path.exists(blender_exe):
+            QMessageBox.critical(self, "Error", f"Blender not found at: {blender_exe}")
+            return
 
-        # 2. Setup unique output directory
+        self.save_state()
+        self.ui.lblStatus.setText("🔍 Syncing with .blend metadata...")
+        QApplication.processEvents() 
+
+        # Using the new native probe
+        frames = self.get_blend_frame_count(blender_exe, blend_path)
+        
+        if frames is None:
+            QMessageBox.warning(self, "Audit Failed", "Metadata probe failed. Check if the .blend is corrupted or paths are locked.")
+            self.ui.lblStatus.setText("Ready.")
+            return
+            
+        self.current_total_frames = frames
         base_name = os.path.splitext(os.path.basename(blend_path))[0]
         out_dir = os.path.join(os.path.dirname(blend_path), f"{base_name}_output")
         if not os.path.exists(out_dir): os.makedirs(out_dir)
 
-        # 3. Resume Math
         existing = [f for f in os.listdir(out_dir) if f.endswith('.png')]
         start_frame = 1
         if existing:
             nums = [int(re.findall(r'\d+', f)[-1]) for f in existing if re.findall(r'\d+', f)]
             if nums: start_frame = max(nums) + 1
 
-        # 4. Fire the render
         args = ["-b", blend_path, "-o", f"{out_dir}/frame_####", "-s", str(start_frame), "-a", "-t", "2"]
         self.render_process.start(blender_exe, args)
-        self.ui.lblStatus.setText(f"Rendering: {base_name} (Total: {self.current_total_frames})")
+        self.ui.lblStatus.setText(f"🚀 {base_name} | Total Frames: {self.current_total_frames}")
 
     def update_ui(self):
         if self.render_process.state() == QProcess.Running:
-            blend_path = self.ui.listQueue.item(0).text()
-            base_name = os.path.splitext(os.path.basename(blend_path))[0]
-            out_dir = os.path.join(os.path.dirname(blend_path), f"{base_name}_output")
-            
-            if os.path.exists(out_dir):
-                count = len([f for f in os.listdir(out_dir) if f.endswith('.png')])
-                # Use the dynamic frame target instead of 1400
-                prog = min(int((count / self.current_total_frames) * 100), 100)
-                self.ui.progressBar.setValue(prog)
+            if self.ui.listQueue.count() > 0:
+                blend_path = self.ui.listQueue.item(0).text()
+                base_name = os.path.splitext(os.path.basename(blend_path))[0]
+                out_dir = os.path.join(os.path.dirname(blend_path), f"{base_name}_output")
+                if os.path.exists(out_dir):
+                    count = len([f for f in os.listdir(out_dir) if f.endswith('.png')])
+                    total = self.current_total_frames if self.current_total_frames > 0 else 1
+                    prog = min(int((count / total) * 100), 100)
+                    self.ui.progressBar.setValue(prog)
 
     def on_render_finished(self):
         if self.ui.listQueue.count() > 0:
@@ -138,12 +153,13 @@ class RenderManager(QMainWindow):
             if self.ui.listQueue.count() > 0:
                 self.start_render()
             else:
-                self.ui.lblStatus.setText("Queue Finished!")
+                self.ui.lblStatus.setText("✅ All Done!")
                 self.ui.progressBar.setValue(100)
 
     def stop_render(self):
-        self.render_process.terminate()
-        self.ui.lblStatus.setText("Render Paused.")
+        if self.render_process.state() == QProcess.Running:
+            self.render_process.terminate()
+            self.ui.lblStatus.setText("🛑 Stopped.")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
