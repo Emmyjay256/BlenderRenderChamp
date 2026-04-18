@@ -1,7 +1,8 @@
 Render Champ v1.0
 A professional, high-efficiency Blender Render Queue Manager built with Python and PySide6. Designed for engineers who need to chain multiple renders on limited hardware without baby-sitting the process.
 
-🚀 Features
+************************************
+Features
 Dynamic Queueing: Add multiple .blend files to be rendered sequentially.
 
 Smart Resume: Automatically detects existing frames in the output folder and starts from the next one.
@@ -12,7 +13,8 @@ Auto-Discovery: Probes each .blend file for its specific frame_end to keep progr
 
 Persistence: Saves your Blender path and queue state to render_config.json.
 
-🛠️ Environment Setup
+***********************************
+Environment Setup
 It is recommended to use a virtual environment (Conda or venv) to avoid dependency conflicts.
 
 PowerShell
@@ -24,7 +26,9 @@ conda activate render_manager
 
 # 3. Install required libraries
 pip install PySide6 pyinstaller
-🏗️ Compilation to .exe
+
+**************************************
+ Compilation to .exe
 To bundle the application into a single standalone executable, use the following command in your terminal:
 
 PowerShell
@@ -38,12 +42,14 @@ Build Flags Explained:
 
 --add-data "main_window.ui;.": Bakes the UI file into the executable so it runs on any PC.
 
-📁 Repository Structure
+*****************************************
+ Repository Structure
 main.py: The core logic and process management.
 
 main_window.ui: The XML file containing the UI design (Editable via Qt Designer).
 
 render_config.json: Automatically generated to store your preferences.
 
-⚠️ Important Note
+****************************************
+ Important Note
 Ensure your Blender path is set correctly within the app before starting a render. The app uses the -t 2 flag by default to limit Blender to 2 CPU threads, keeping your system responsive for other engineering tasks.
